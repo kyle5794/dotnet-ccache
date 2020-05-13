@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using System.Data.HashFunction.FNV;
 using System.Runtime.CompilerServices;
 [assembly: InternalsVisibleTo("CCache.Test")]
+[assembly: InternalsVisibleTo("CCache.Bench")]
 
 namespace CCache
 {
@@ -21,7 +22,7 @@ namespace CCache
         private Bucket[] _buckets;
         private UInt32 _bucketMask;
 
-        private IFNV1a _fnv;
+        private IFNV1a _fnv = FNV1aFactory.Instance.Create();
         public Cache(Configuration config)
         {
             _config = config;
@@ -32,7 +33,6 @@ namespace CCache
                 _buckets[i] = new Bucket();
             }
 
-            _fnv = FNV1aFactory.Instance.Create();
             Restart();
         }
 
@@ -54,7 +54,7 @@ namespace CCache
 
         public T Fetch<T>(string key, TimeSpan duration, Func<T> fetchFn)
         {
-            var item = Bucket(key).Get(key);
+            var item = Bucket(key).GetOrDefault(key);
             if (item != null || !item.Expired)
             {
                 return (T)item.Value;
@@ -96,7 +96,7 @@ namespace CCache
 
         public async Task<bool> Replace(string key, object value)
         {
-            var item = Bucket(key).Get(key);
+            var item = Bucket(key).GetOrDefault(key);
             if (item == null)
             {
                 return false;
@@ -107,22 +107,6 @@ namespace CCache
         }
 
         public Task Set<T>(string key, T value, TimeSpan duration) => DoSet(key, value, duration);
-
-        private async Task<Item> DoSet<T>(string key, T value, TimeSpan duration)
-        {
-            var (item, existing) = Bucket(key).Set(key, value, duration);
-            if (existing != null && !_deleteChannel.Writer.TryWrite(existing))
-            {
-                await _deleteChannel.Writer.WriteAsync(existing);
-            }
-
-            if (!_promoteChannel.Writer.TryWrite(item))
-            {
-                await _promoteChannel.Writer.WriteAsync(item);
-            }
-
-            return item;
-        }
 
         public async Task<bool> Delete(string key)
         {
@@ -171,55 +155,80 @@ namespace CCache
             StartWorker();
         }
 
+        internal Bucket Bucket(string key)
+        {
+            var hash = _fnv.ComputeHash(Encoding.ASCII.GetBytes(key));
+            var sum = BitConverter.ToUInt32(hash.Hash, 0);
+            return _buckets[sum & _bucketMask];
+        }
+
+        private async Task<Item> DoSet<T>(string key, T value, TimeSpan duration)
+        {
+            var (item, existing) = Bucket(key).Set(key, value, duration);
+            if (existing != null && !_deleteChannel.Writer.TryWrite(existing))
+            {
+                await _deleteChannel.Writer.WriteAsync(existing);
+            }
+
+            if (!_promoteChannel.Writer.TryWrite(item))
+            {
+                await _promoteChannel.Writer.WriteAsync(item);
+            }
+
+            return item;
+        }
 
         private void StartWorker()
         {
-            Task.Run(async () =>
-            {
-                try
-                {
-                    while (true)
-                    {
-                        try
-                        {
-                            var promote = await _promoteChannel.Reader.ReadAsync();
-                            if (DoPromote(promote) && _size > _config.MaxSize) GC();
-                        }
-                        catch (ChannelClosedException)
-                        {
-                            _deleteChannel.Writer.Complete();
-                            await DoDrain();
-                            return;
-                        }
-                    }
-                }
-                finally
-                {
-                    await _doneChannel.Writer.WriteAsync(true);
-                    _doneChannel.Writer.Complete();
-                }
-            });
+            Task.Run(PromoteWorker);
+            Task.Run(DeleteWorker);
+        }
 
-            Task.Run(async () =>
+        private async Task PromoteWorker()
+        {
+            try
             {
                 while (true)
                 {
                     try
                     {
-                        var delete = await _deleteChannel.Reader.ReadAsync();
-                        DoDelete(delete);
+                        var promote = await _promoteChannel.Reader.ReadAsync();
+                        if (DoPromote(promote) && _size > _config.MaxSize) GC();
                     }
                     catch (ChannelClosedException)
                     {
+                        _deleteChannel.Writer.Complete();
+                        await DoDrain();
                         return;
                     }
                 }
-            });
+            }
+            finally
+            {
+                await _doneChannel.Writer.WriteAsync(true);
+                _doneChannel.Writer.Complete();
+            }
+        }
+
+        private async Task DeleteWorker()
+        {
+            while (true)
+            {
+                try
+                {
+                    var delete = await _deleteChannel.Reader.ReadAsync();
+                    DoDelete(delete);
+                }
+                catch (ChannelClosedException)
+                {
+                    return;
+                }
+            }
         }
 
         private async Task DoDrain()
         {
-            while (await _deleteChannel.Reader.WaitToReadAsync().ConfigureAwait(false))
+            while (await _deleteChannel.Reader.WaitToReadAsync())
             {
                 while (_deleteChannel.Reader.TryRead(out var item))
                 {
@@ -297,13 +306,6 @@ namespace CCache
             }
 
             return dropped;
-        }
-
-        internal Bucket Bucket(string key)
-        {
-            var hash = _fnv.ComputeHash(Encoding.ASCII.GetBytes(key));
-            var sum = BitConverter.ToUInt32(hash.Hash, 0);
-            return _buckets[sum & _bucketMask];
         }
     }
 }
