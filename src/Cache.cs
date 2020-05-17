@@ -18,8 +18,6 @@ namespace CCache
         private Channel<Item> _deleteChannel;
         private Channel<Item> _promoteChannel;
         private Channel<bool> _doneChannel;
-        private Channel<bool> _droppedReqChannel;
-        private Channel<int> _droppedResChannel;
         private Int64 _size;
         private Bucket[] _buckets;
         private UInt32 _bucketMask;

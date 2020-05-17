@@ -3,16 +3,10 @@ using Xunit;
 using CCache;
 using System.Threading.Tasks;
 using System.Collections.Generic;
-using Xunit.Abstractions;
 namespace test
 {
     public class CacheTest
     {
-        private ITestOutputHelper helper;
-        public CacheTest(ITestOutputHelper helper)
-        {
-            this.helper = helper;
-        }
         [Fact]
         public void TestGetMissFromCache()
         {
@@ -69,7 +63,6 @@ namespace test
                 GetsPerPromote = 1,
                 ItemsToPrune = 10,
             });
-            helper.WriteLine("commence testing");
             for (int i = 0; i < 15; i++)
             {
                 await cache.Set(i.ToString(), i.ToString(), TimeSpan.FromMinutes(1));
@@ -78,13 +71,11 @@ namespace test
             Assert.Equal("0", (await cache.GetOrDefault("0")).Value<string>());
             Assert.Equal("9", (await cache.GetOrDefault("9")).Value<string>());
             Assert.True(await cache.Delete("13"));
-            helper.WriteLine("finish insert");
 
             await Task.Delay(2000);
             await cache.Stop();
             cache.GC();
             cache.Restart();
-            helper.WriteLine("finish restart");
             Assert.Null(await cache.GetOrDefault("1"));
             Assert.Null(await cache.GetOrDefault("10"));
             Assert.Null(await cache.GetOrDefault("11"));
@@ -92,7 +83,6 @@ namespace test
             Assert.Equal("9", (await cache.GetOrDefault("9")).Value<string>());
             Assert.Equal("14", (await cache.GetOrDefault("14")).Value<string>());
             Assert.Equal(4, cache.ItemCount);
-            Assert.True(false);
         }
 
         [Fact]

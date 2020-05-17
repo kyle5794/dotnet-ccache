@@ -1,6 +1,7 @@
 using System;
 using System.Text;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Threading.Channels;
 using System.Collections.Generic;
@@ -23,6 +24,8 @@ namespace CCache
         private LayeredBucket[] _buckets;
         private UInt32 _bucketMask;
         private IFNV1a _fnv = FNV1aFactory.Instance.Create();
+        private int _dropped;
+
         public LayeredCache(Configuration config)
         {
             _config = config;
@@ -94,7 +97,7 @@ namespace CCache
             return true;
         }
 
-        public Task Set<T>(string primaryKey, string secondaryKey, T value, TimeSpan duration) 
+        public Task Set<T>(string primaryKey, string secondaryKey, T value, TimeSpan duration)
             => DoSet(primaryKey, secondaryKey, value, duration);
 
         public async Task<bool> Delete(string primaryKey, string secondaryKey)
@@ -111,6 +114,16 @@ namespace CCache
             }
 
             return true;
+        }
+
+        public int Dropped
+        {
+            get
+            {
+                var x = _dropped; // read and writes to 32-bit value types are atomic
+                Interlocked.Exchange(ref _dropped, 0); // Reset dropped count
+                return x;
+            }
         }
 
         public void Clear()
@@ -131,7 +144,13 @@ namespace CCache
             {
                 while (_doneChannel.Reader.TryRead(out var done))
                 {
-                    if (done) return;
+                    if (done)
+                    {
+                        await _doneChannel.Reader.Completion;
+                        await _deleteChannel.Reader.Completion;
+                        await _promoteChannel.Reader.Completion;
+                        return;
+                    }
                 }
             }
         }
@@ -182,12 +201,15 @@ namespace CCache
                     try
                     {
                         var promote = await _promoteChannel.Reader.ReadAsync();
-                        if (DoPromote(promote) && _size > _config.MaxSize) GC();
+                        if (DoPromote(promote) && _size > _config.MaxSize)
+                        {
+                            var dropped = GC();
+                            Interlocked.Add(ref _dropped, dropped);
+                        }
                     }
                     catch (ChannelClosedException)
                     {
                         _deleteChannel.Writer.Complete();
-                        await DoDrain();
                         return;
                     }
                 }
@@ -200,22 +222,6 @@ namespace CCache
         }
 
         private async Task DeleteWorker()
-        {
-            while (true)
-            {
-                try
-                {
-                    var delete = await _deleteChannel.Reader.ReadAsync();
-                    DoDelete(delete);
-                }
-                catch (ChannelClosedException)
-                {
-                    return;
-                }
-            }
-        }
-
-        private async Task DoDrain()
         {
             while (await _deleteChannel.Reader.WaitToReadAsync())
             {
