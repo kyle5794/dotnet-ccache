@@ -3,16 +3,21 @@ using Xunit;
 using CCache;
 using System.Threading.Tasks;
 using System.Collections.Generic;
-
+using Xunit.Abstractions;
 namespace test
 {
     public class CacheTest
     {
+        private ITestOutputHelper helper;
+        public CacheTest(ITestOutputHelper helper)
+        {
+            this.helper = helper;
+        }
         [Fact]
         public void TestGetMissFromCache()
         {
             var cache = new Cache();
-            Assert.ThrowsAsync<KeyNotFoundException>(() => cache.Get<List<string>>("omegalulz"));
+            Assert.ThrowsAsync<KeyNotFoundException>(() => cache.Get("omegalulz"));
         }
 
         [Fact]
@@ -27,9 +32,10 @@ namespace test
             var delete = await cache.Delete("genichiro");
             Assert.True(delete);
 
-            Assert.Null(await cache.GetOrDefault<string>("genichiro"));
+            Assert.Null(await cache.GetOrDefault("genichiro"));
             Assert.Equal(1, cache.ItemCount);
-            Assert.Equal("sabimaru", await cache.GetOrDefault<string>("sekiro"));
+            var item = await cache.GetOrDefault("sekiro");
+            Assert.Equal("sabimaru", item.Value<string>());
         }
 
         [Fact]
@@ -48,10 +54,10 @@ namespace test
             cache.GC();
             cache.Restart();
 
-            Assert.Null(await cache.GetOrDefault<string>("0"));
-            Assert.Null(await cache.GetOrDefault<string>("499"));
-            Assert.Equal("500", await cache.GetOrDefault<string>("500"));
-            Assert.Equal("999", await cache.GetOrDefault<string>("999"));
+            Assert.Null(await cache.GetOrDefault("0"));
+            Assert.Null(await cache.GetOrDefault("499"));
+            Assert.Equal("500", (await cache.GetOrDefault("500")).Value<string>());
+            Assert.Equal("999", (await cache.GetOrDefault("999")).Value<string>());
             Assert.Equal(500, cache.ItemCount);
         }
 
@@ -63,28 +69,30 @@ namespace test
                 GetsPerPromote = 1,
                 ItemsToPrune = 10,
             });
-
+            helper.WriteLine("commence testing");
             for (int i = 0; i < 15; i++)
             {
                 await cache.Set(i.ToString(), i.ToString(), TimeSpan.FromMinutes(1));
             }
             Assert.Equal(15, cache.ItemCount);
-
-            Assert.Equal("0", await cache.GetOrDefault<string>("0"));
-            Assert.Equal("9", await cache.GetOrDefault<string>("9"));
+            Assert.Equal("0", (await cache.GetOrDefault("0")).Value<string>());
+            Assert.Equal("9", (await cache.GetOrDefault("9")).Value<string>());
+            Assert.True(await cache.Delete("13"));
+            helper.WriteLine("finish insert");
 
             await Task.Delay(2000);
             await cache.Stop();
             cache.GC();
             cache.Restart();
-
-            Assert.Null(await cache.GetOrDefault<string>("1"));
-            Assert.Null(await cache.GetOrDefault<string>("10"));
-            Assert.Null(await cache.GetOrDefault<string>("11"));
-            Assert.Equal("0", await cache.GetOrDefault<string>("0"));
-            Assert.Equal("9", await cache.GetOrDefault<string>("9"));
-            Assert.Equal("14", await cache.GetOrDefault<string>("14"));
-            Assert.Equal(5, cache.ItemCount);
+            helper.WriteLine("finish restart");
+            Assert.Null(await cache.GetOrDefault("1"));
+            Assert.Null(await cache.GetOrDefault("10"));
+            Assert.Null(await cache.GetOrDefault("11"));
+            Assert.Equal("0", (await cache.GetOrDefault("0")).Value<string>());
+            Assert.Equal("9", (await cache.GetOrDefault("9")).Value<string>());
+            Assert.Equal("14", (await cache.GetOrDefault("14")).Value<string>());
+            Assert.Equal(4, cache.ItemCount);
+            Assert.True(false);
         }
 
         [Fact]
@@ -110,11 +118,11 @@ namespace test
 
             await Task.Delay(2000);
 
-            Assert.Null(await cache.GetOrDefault<string>("0"));
-            Assert.Null(await cache.GetOrDefault<string>("1"));
-            Assert.Equal("2", await cache.GetOrDefault<string>("2"));
-            Assert.Equal("3", await cache.GetOrDefault<string>("3"));
-            Assert.Equal("11", await cache.GetOrDefault<string>("11"));
+            Assert.Null(await cache.GetOrDefault("0"));
+            Assert.Null(await cache.GetOrDefault("1"));
+            Assert.Equal("2", (await cache.GetOrDefault("2")).Value<string>());
+            Assert.Equal("3", (await cache.GetOrDefault("3")).Value<string>());
+            Assert.Equal("11", (await cache.GetOrDefault("11")).Value<string>());
             Assert.Equal(10, cache.ItemCount);
             Assert.True(onDeleteFnCalled);
         }

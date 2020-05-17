@@ -27,7 +27,7 @@ namespace test
         {
             var bucket = new Bucket();
             var (item, existing) = bucket.Set("k", "lulz", TimeSpan.FromSeconds(1000));
-            var value = (string)item.Value;
+            var value = (string)item.Object;
             Assert.Equal("lulz", value);
             Assert.Null(existing);
         }
@@ -37,14 +37,14 @@ namespace test
         {
             var bucket = new Bucket();
             var (item1, existing1) = bucket.Set("k", "lulz", TimeSpan.FromSeconds(1000));
-            var value1 = (string)item1.Value;
+            var value1 = (string)item1.Object;
             Assert.Equal("lulz", value1);
             Assert.Null(existing1);
 
             var (item2, existing2) = bucket.Set("k", "omegalulzl", TimeSpan.FromSeconds(1000));
-            var value2 = (string)item2.Value;
+            var value2 = (string)item2.Object;
             Assert.Equal("omegalulzl", value2);
-            var value3 = (string)existing2.Value;
+            var value3 = (string)existing2.Object;
             Assert.Equal("lulz", value3);
         }
 
@@ -54,7 +54,7 @@ namespace test
             var bucket = new Bucket();
             bucket.Set("k", "lulz", TimeSpan.FromSeconds(1000));
             var item = bucket.GetOrDefault("k");
-            var value = (string)item.Value;
+            var value = (string)item.Object;
             Assert.Equal("lulz", value);
         }
 
@@ -64,7 +64,7 @@ namespace test
             var bucket = new Bucket();
             bucket.Set("k", "lulz", TimeSpan.FromSeconds(1000));
             var item = bucket.GetOrDefault("k");
-            var value = (string)item.Value;
+            var value = (string)item.Object;
             Assert.Equal("lulz", value);
             bucket.Delete("k");
             Assert.Null(bucket.GetOrDefault("k"));

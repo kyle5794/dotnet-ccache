@@ -7,7 +7,7 @@
   <ItemGroup>
     <PackageReference Include="System.Data.HashFunction.FNV" Version="2.0.0" />
     <PackageReference Include="System.Threading.Channels" Version="4.7.0" />
-
+    <PackageReference Include="xunit" Version="2.4.0" />
   </ItemGroup>
 
 </Project>

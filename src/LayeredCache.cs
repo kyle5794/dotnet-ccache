@@ -1,6 +1,6 @@
 using System;
 using System.Text;
-using System.Threading;
+using System.Linq;
 using System.Threading.Tasks;
 using System.Threading.Channels;
 using System.Collections.Generic;
@@ -11,68 +11,64 @@ using System.Runtime.CompilerServices;
 
 namespace CCache
 {
-    public class Cache
+    public class LayeredCache
     {
         private readonly Configuration _config = new Configuration();
         private LinkedList<Item> _list = new LinkedList<Item>();
         private Channel<Item> _deleteChannel;
         private Channel<Item> _promoteChannel;
         private Channel<bool> _doneChannel;
-        private Channel<bool> _droppedReqChannel;
-        private Channel<int> _droppedResChannel;
+        private Channel<int> _droppedChannel;
         private Int64 _size;
-        private Bucket[] _buckets;
+        private LayeredBucket[] _buckets;
         private UInt32 _bucketMask;
-        private int _dropped;
         private IFNV1a _fnv = FNV1aFactory.Instance.Create();
-        public Cache(Configuration config)
+        public LayeredCache(Configuration config)
         {
             _config = config;
-            _buckets = new Bucket[config.Buckets];
+            _buckets = new LayeredBucket[config.Buckets];
             _bucketMask = (UInt32)config.Buckets - 1;
             for (int i = 0; i < config.Buckets; i++)
             {
-                _buckets[i] = new Bucket();
+                _buckets[i] = new LayeredBucket();
             }
 
             Restart();
         }
-        public Cache() : this(new Configuration()) { }
 
-        public int ItemCount
+        public LayeredCache() : this(new Configuration()) { }
+
+        public int ItemCount { get => _buckets.Aggregate(0, (acc, bucket) => acc + bucket.Count); }
+
+        public async Task<Item> Fetch<T>(string primaryKey, string secondaryKey, TimeSpan duration, Func<T> fetchFn)
         {
-            get
-            {
-                var count = 0;
-                foreach (var bucket in _buckets)
-                {
-                    count += bucket.Count;
-                }
-
-                return count;
-            }
-        }
-
-        public async Task<Item> Fetch<T>(string key, TimeSpan duration, Func<T> fetchFn)
-        {
-            var item = Bucket(key).GetOrDefault(key);
+            var item = Bucket(primaryKey).GetOrDefault(primaryKey, secondaryKey);
             if (item != null || !item.Expired)
             {
                 return item;
             }
 
             var value = fetchFn();
-            var newItem = await DoSet(key, value, duration);
+            var newItem = await DoSet(primaryKey, secondaryKey, value, duration);
             return newItem;
         }
 
-        /// <summary>GetOrDefault returns null if key is not found.
-        /// This can return an expired item. Use item.Expired to see if the item
-        /// is expired and item.TTL to see how long until the item expires (which
-        /// will be negative for an already expired item).</summary>
-        public async Task<Item> GetOrDefault(string key)
+        // Get throws KeyNotFoundException if key is not found
+        public async Task<Item> Get(string primaryKey, string secondaryKey)
         {
-            var item = Bucket(key).GetOrDefault(key);
+            var item = Bucket(primaryKey).Get(primaryKey, secondaryKey);
+            if (!item.Expired && !_promoteChannel.Writer.TryWrite(item))
+            {
+                await _promoteChannel.Writer.WriteAsync(item);
+            }
+
+            return item;
+        }
+
+        // GetOrDefault returns null if key is not found
+        public async Task<Item> GetOrDefault(string primaryKey, string secondaryKey)
+        {
+            var item = Bucket(primaryKey).GetOrDefault(primaryKey, secondaryKey);
             if (item == null)
             {
                 return null;
@@ -86,55 +82,24 @@ namespace CCache
             return item;
         }
 
-        /// <summary>Get throws KeyNotFoundException if key is not found
-        /// This can return an expired item. Use item.Expired to see if the item
-        /// is expired and item.TTL to see how long until the item expires (which
-        /// will be negative for an already expired item).</summary>
-        public async Task<Item> Get(string key)
+        public async Task<bool> Replace(string primaryKey, string secondaryKey, object value)
         {
-            var item = Bucket(key).Get(key);
-            if (!item.Expired && !_promoteChannel.Writer.TryWrite(item))
-            {
-                await _promoteChannel.Writer.WriteAsync(item);
-            }
-
-            return item;
-        }
-
-        public async Task<Item> TrackingGet(string key)
-        {
-            var item = Bucket(key).GetOrDefault(key);
-            if (item == null)
-            {
-                return null;
-            }
-
-            if (!item.Expired && !_promoteChannel.Writer.TryWrite(item))
-            {
-                await _promoteChannel.Writer.WriteAsync(item);
-            }
-
-            item.Track();
-            return item;
-        }
-
-        public async Task<bool> Replace(string key, object value)
-        {
-            var item = Bucket(key).GetOrDefault(key);
+            var item = Bucket(primaryKey).GetOrDefault(primaryKey, secondaryKey);
             if (item == null)
             {
                 return false;
             }
 
-            await Set(key, value, item.TTL);
+            await Set(primaryKey, secondaryKey, value, item.TTL);
             return true;
         }
 
-        public Task Set<T>(string key, T value, TimeSpan duration) => DoSet(key, value, duration);
+        public Task Set<T>(string primaryKey, string secondaryKey, T value, TimeSpan duration) 
+            => DoSet(primaryKey, secondaryKey, value, duration);
 
-        public async Task<bool> Delete(string key)
+        public async Task<bool> Delete(string primaryKey, string secondaryKey)
         {
-            var item = Bucket(key).Delete(key);
+            var item = Bucket(primaryKey).Delete(primaryKey, secondaryKey);
             if (item == null)
             {
                 return false;
@@ -146,16 +111,6 @@ namespace CCache
             }
 
             return true;
-        }
-
-        public int Dropped
-        {
-            get
-            {
-                var x = _dropped; // read and writes to 32-bit value types are atomic
-                Interlocked.Exchange(ref _dropped, 0); // Reset dropped count
-                return x;
-            }
         }
 
         public void Clear()
@@ -176,13 +131,7 @@ namespace CCache
             {
                 while (_doneChannel.Reader.TryRead(out var done))
                 {
-                    if (done)
-                    {
-                        await _doneChannel.Reader.Completion;
-                        await _deleteChannel.Reader.Completion;
-                        await _promoteChannel.Reader.Completion;
-                        return;
-                    }
+                    if (done) return;
                 }
             }
         }
@@ -195,16 +144,16 @@ namespace CCache
             StartWorker();
         }
 
-        internal Bucket Bucket(string key)
+        internal LayeredBucket Bucket(string key)
         {
             var hash = _fnv.ComputeHash(Encoding.ASCII.GetBytes(key));
             var sum = BitConverter.ToUInt32(hash.Hash, 0);
             return _buckets[sum & _bucketMask];
         }
 
-        private async Task<Item> DoSet<T>(string key, T value, TimeSpan duration)
+        private async Task<Item> DoSet<T>(string primaryKey, string secondaryKey, T value, TimeSpan duration)
         {
-            var (item, existing) = Bucket(key).Set(key, value, duration);
+            var (item, existing) = Bucket(primaryKey).Set(primaryKey, secondaryKey, value, duration);
             if (existing != null && !_deleteChannel.Writer.TryWrite(existing))
             {
                 await _deleteChannel.Writer.WriteAsync(existing);
@@ -233,15 +182,12 @@ namespace CCache
                     try
                     {
                         var promote = await _promoteChannel.Reader.ReadAsync();
-                        if (DoPromote(promote) && _size > _config.MaxSize)
-                        {
-                            var dropped = GC();
-                            Interlocked.Add(ref _dropped, dropped);
-                        }
+                        if (DoPromote(promote) && _size > _config.MaxSize) GC();
                     }
                     catch (ChannelClosedException)
                     {
                         _deleteChannel.Writer.Complete();
+                        await DoDrain();
                         return;
                     }
                 }
@@ -254,6 +200,22 @@ namespace CCache
         }
 
         private async Task DeleteWorker()
+        {
+            while (true)
+            {
+                try
+                {
+                    var delete = await _deleteChannel.Reader.ReadAsync();
+                    DoDelete(delete);
+                }
+                catch (ChannelClosedException)
+                {
+                    return;
+                }
+            }
+        }
+
+        private async Task DoDrain()
         {
             while (await _deleteChannel.Reader.WaitToReadAsync())
             {
@@ -317,7 +279,7 @@ namespace CCache
                 var item = last.Value;
                 if (_config.Tracking || item.RefCount == 0)
                 {
-                    Bucket(item.Key).Delete(item.Key);
+                    Bucket(item.Group).Delete(item.Group, item.Key);
                     _size -= item.Size;
                     _list.Remove(item.Node);
                     if (_config.OnDelete != null)
