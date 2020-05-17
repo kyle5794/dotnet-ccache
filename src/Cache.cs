@@ -46,7 +46,7 @@ namespace CCache
         public async Task<Item> Fetch<T>(string key, TimeSpan duration, Func<T> fetchFn)
         {
             var item = Bucket(key).GetOrDefault(key);
-            if (item != null || !item.Expired)
+            if (item != null && !item.Expired)
             {
                 return item;
             }
@@ -136,6 +136,17 @@ namespace CCache
             }
 
             return true;
+        }
+
+        public async Task<int> DeletePrefix(string prefix)
+        {
+            var count = 0;
+            foreach (var bucket in _buckets)
+            {
+                count += await bucket.DeletePrefix(prefix, _deleteChannel.Writer);
+            }
+
+            return count;
         }
 
         public int Dropped

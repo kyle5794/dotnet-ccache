@@ -33,6 +33,82 @@ namespace test
         }
 
         [Fact]
+        public async Task TestDeleteAPrefix()
+        {
+            var cache = new Cache();
+            Assert.Equal(0, cache.ItemCount);
+            await cache.Set("sekiro::wolf", "sabimaru", TimeSpan.FromSeconds(1000));
+            await cache.Set("sekiro::genichiro", "bmb", TimeSpan.FromSeconds(1000));
+            await cache.Set("darksoul::sif", "wolf", TimeSpan.FromSeconds(1000));
+            await cache.Set("darksoul::artorias", "bsm", TimeSpan.FromSeconds(1000));
+            Assert.Equal(4, cache.ItemCount);
+
+            var count = await cache.DeletePrefix("sekiro");
+            Assert.Equal(2, count);
+
+            await Task.Delay(2000);
+
+            Assert.Equal(2, cache.ItemCount);
+            Assert.Null(await cache.GetOrDefault("sekiro::wolf"));
+            Assert.Null(await cache.GetOrDefault("sekiro::genichiro"));
+
+            var i1 = await cache.GetOrDefault("darksoul::sif");
+            Assert.Equal("wolf", i1.Value<string>());
+
+            var i2 = await cache.GetOrDefault("darksoul::artorias");
+            Assert.Equal("bsm", i2.Value<string>());
+        }
+
+        [Fact]
+        public async Task TestOnDeleteCallbackCalled()
+        {
+            var onDeleteFnCalled = false;
+            Action<Item> onDeleteFn = (Item item) =>
+            {
+                if (item.Key == "genichiro") onDeleteFnCalled = true;
+            };
+
+            var cache = new Cache(new Configuration()
+            {
+                ItemsToPrune = 1,
+                MaxSize = 10,
+                OnDelete = onDeleteFn
+            });
+
+            await cache.Set("sekiro", "one arm wolf", TimeSpan.FromMinutes(1));
+            await cache.Set("genichiro", "bmb", TimeSpan.FromMinutes(1));
+            Assert.Equal(2, cache.ItemCount);
+
+            await Task.Delay(1000);
+            Assert.True(await cache.Delete("genichiro"));
+            await Task.Delay(1000);
+
+            Assert.Null(await cache.GetOrDefault("genichiro"));
+            var item = await cache.GetOrDefault("sekiro");
+            Assert.Equal("one arm wolf", item.Value<string>());
+            Assert.True(onDeleteFnCalled);
+        }
+
+        [Fact]
+        public async Task TestFetchExpiredItem()
+        {
+            var cache = new Cache();
+
+            await cache.Set("sekiro", "one arm wolf", TimeSpan.FromMinutes(-1)); // Expired item
+            await cache.Set("emma", "the physician", TimeSpan.FromHours(1)); // Not expired item
+            Assert.Equal(2, cache.ItemCount);
+
+            Func<string> fetchFN = () => "mortal blade";
+            await Task.Delay(2000);
+
+            var sekiro = await cache.Fetch("sekiro", TimeSpan.FromSeconds(1), fetchFN);
+            Assert.Equal("mortal blade", sekiro.Value<string>());
+
+            var emma = await cache.Fetch("emma", TimeSpan.FromSeconds(1), fetchFN);
+            Assert.Equal("the physician", emma.Value<string>());
+        }
+
+        [Fact]
         public async Task TestGCTheOldestItem()
         {
             var cache = new Cache();
@@ -115,6 +191,40 @@ namespace test
             Assert.Equal("11", (await cache.GetOrDefault("11")).Value<string>());
             Assert.Equal(10, cache.ItemCount);
             Assert.True(onDeleteFnCalled);
+        }
+
+        [Fact]
+        public async Task TestTrackerDoesNotCleanupHeldInstance()
+        {
+            var cache = new Cache(new Configuration()
+            {
+                ItemsToPrune = 10
+            });
+
+            for (int i = 0; i < 10; i++)
+            {
+                await cache.Set(i.ToString(), i.ToString(), TimeSpan.FromMinutes(1));
+            }
+
+            var item = await cache.TrackingGet("0");
+
+            await Task.Delay(2000);
+
+            await cache.Stop();
+            cache.GC();
+            cache.Restart();
+
+            Assert.Equal(1, cache.ItemCount);
+            var i0 = await cache.GetOrDefault("0");
+            Assert.Equal("0", i0.Value<string>());
+            Assert.Null(await cache.GetOrDefault("1"));
+            Assert.Null(await cache.GetOrDefault("9"));
+
+            item.Release();
+            await cache.Stop();
+            cache.GC();
+            cache.Restart();
+            Assert.Null(await cache.GetOrDefault("0"));
         }
     }
 }

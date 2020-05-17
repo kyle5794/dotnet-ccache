@@ -160,8 +160,9 @@ namespace CCache
                     if (!deleteChannel.TryWrite(item.Value))
                     {
                         await deleteChannel.WriteAsync(item.Value);
-                        keys.Add(item.Key);
                     }
+
+                    keys.Add(item.Key);
                 }
             }
             _rwl.ReleaseReaderLock();
@@ -172,8 +173,10 @@ namespace CCache
             }
 
             _rwl.AcquireWriterLock(_timeOut);
-
-            keys.Select(k => _lookup.Remove(k));
+            foreach (var key in keys)
+            {
+                _lookup.Remove(key);
+            }
             _rwl.ReleaseWriterLock();
 
             return keys.Count;
