@@ -43,6 +43,9 @@ namespace CCache
 
         public int ItemCount { get => _buckets.Aggregate(0, (acc, bucket) => acc + bucket.Count); }
 
+        public ChannelWriter<Item> DeleteWriter { get => _deleteChannel.Writer; }
+        public ChannelWriter<Item> PromoteWriter { get => _promoteChannel.Writer; }
+
         public async Task<Item> Fetch<T>(string primaryKey, string secondaryKey, TimeSpan duration, Func<T> fetchFn)
         {
             var item = Bucket(primaryKey).GetOrDefault(primaryKey, secondaryKey);
@@ -51,9 +54,7 @@ namespace CCache
                 return item;
             }
 
-            var value = fetchFn();
-            var newItem = await DoSet(primaryKey, secondaryKey, value, duration);
-            return newItem;
+            return await DoSet(primaryKey, secondaryKey, fetchFn(), duration);;
         }
 
         // Get throws KeyNotFoundException if key is not found
