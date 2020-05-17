@@ -1,5 +1,6 @@
 using System;
 using System.Text;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Threading.Channels;
@@ -39,16 +40,7 @@ namespace CCache
 
         public int ItemCount
         {
-            get
-            {
-                var count = 0;
-                foreach (var bucket in _buckets)
-                {
-                    count += bucket.Count;
-                }
-
-                return count;
-            }
+            get => _buckets.Aggregate(0, (acc, bucket) => acc + bucket.Count);
         }
 
         public async Task<Item> Fetch<T>(string key, TimeSpan duration, Func<T> fetchFn)

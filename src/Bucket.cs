@@ -172,10 +172,8 @@ namespace CCache
             }
 
             _rwl.AcquireWriterLock(_timeOut);
-            foreach (var key in keys)
-            {
-                _lookup.Remove(key);
-            }
+
+            keys.Select(k => _lookup.Remove(k));
             _rwl.ReleaseWriterLock();
 
             return keys.Count;
